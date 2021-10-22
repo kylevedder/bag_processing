@@ -1,0 +1,86 @@
+#!/usr/bin/python
+import os
+import shutil
+import argparse
+import cv2
+import rosbag
+import numpy as np
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+
+parser = argparse.ArgumentParser(description='Process some integers.')
+parser.add_argument('bag', help='an integer for the accumulator')
+parser.add_argument("output_dir", help="Output directory.")
+args = parser.parse_args()
+
+shutil.rmtree(args.output_dir, ignore_errors=True)
+os.mkdir(args.output_dir)
+
+bag = rosbag.Bag(args.bag)
+bridge = CvBridge()
+rgb_idx = 0
+depth_idx = 0
+odom_idx = 0
+depth_info_dumped = False
+
+rgb_infos = []
+depth_infos = []
+
+for idx, (topic, msg, t) in enumerate(
+        bag.read_messages(topics=[
+            '/camera/rgb/image_raw_throttle_sync',
+            '/camera/depth/image_raw_throttle_sync',
+            '/camera/depth/camera_info', '/odom_combined_throttle_sync'
+        ])):
+    if topic == "/camera/depth/camera_info":
+        if depth_info_dumped:
+            continue
+        K = np.array(msg.K).reshape((3, 3))
+        P = np.array(msg.P).reshape((3, 4))
+        image_info = np.array([msg.width, msg.height])
+        np.save(os.path.join(args.output_dir, "depth_info_K.npy"), K)
+        np.save(os.path.join(args.output_dir, "depth_info_P.npy"), P)
+        np.save(os.path.join(args.output_dir, "depth_info_size.npy"),
+                image_info)
+        depth_info_dumped = True
+        print "Depth info dumped"
+        continue
+    if topic == "/odom_combined_throttle_sync":
+        pmsg = msg.pose.pose.position
+        port = msg.pose.pose.orientation
+        odom = np.array(
+            [t.to_sec(), pmsg.x, pmsg.y, pmsg.z, port.x, port.y, port.z, port.w],
+            dtype=np.float)
+        np.save(os.path.join(args.output_dir, "odom_%06i.npy" % odom_idx),
+                odom)
+        odom_idx += 1
+        continue
+    if topic == "/camera/depth/image_raw_throttle_sync":
+        print("Depth t", t.to_sec())
+        # Monochannel image with depth in mm per pixel.
+        cv_img = bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        filename = os.path.join(args.output_dir, "depth_%06i.png" % depth_idx)
+        cv2.imwrite(filename, cv_img)
+        depth_infos.append((t.to_sec(), "depth_%06i.png" % depth_idx))
+        depth_idx += 1
+        continue
+    if topic == "/camera/rgb/image_raw_throttle_sync":
+        print("RGB T", t.to_sec())
+        cv_img = bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        filename = os.path.join(args.output_dir, "rgb_%06i.png" % rgb_idx)
+        cv2.imwrite(filename, cv_img)
+        rgb_infos.append((t.to_sec(), "rgb_%06i.png" % rgb_idx))
+        rgb_idx += 1
+        continue
+
+bag.close()
+
+# assert odom_idx == depth_idx, "{} vs {}".format(odom_idx, depth_idx)
+assert depth_idx == rgb_idx, "{} vs {}".format(depth_idx, rgb_idx)
+
+assert len(depth_infos) == len(rgb_infos)
+
+f = open(os.path.join(args.output_dir, "associations.txt") , "a")
+for (rgbt, rgb), (dt, d) in zip(rgb_infos, depth_infos):
+    f.write("{} {} {} {}\n".format(rgbt, rgb, dt, d))
+f.close()
