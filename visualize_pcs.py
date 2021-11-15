@@ -53,23 +53,21 @@ def get_intrinsic_matrix(input_dir):
 def get_rgbd_odoms(input_dir: str):
     depth_imgs = sorted(glob.glob(input_dir + "/depth_*.png"))
     rgb_imgs = sorted(glob.glob(input_dir + "/rgb_*.png"))
-    associations = open(input_dir + "/associations.txt").readlines()
-    odom_infos = open(input_dir + "/CameraTrajectory.txt").readlines()
+    odom_infos = sorted(glob.glob(input_dir + "/odom_*.npy"))
     assert len(depth_imgs) == len(
         rgb_imgs), f"{len(depth_imgs)} vs {len(rgb_imgs)}"
+    assert len(odom_infos) == len(
+        depth_imgs), f"{len(odom_infos)} vs {len(depth_imgs)}"
+    print(f"Found {len(depth_imgs)} images")
 
-    odom_infos = [np.array(e.split(' '), dtype=np.float64) for e in odom_infos]
-    odom_times = set([e[0] for e in odom_infos])
-    association_times = [float(e.split(' ')[0]) for e in associations]
-
-    depth_imgs = [o3d.io.read_image(e) for idx, e in enumerate(depth_imgs) if association_times[idx] in odom_times]
-    rgb_imgs = [o3d.io.read_image(e) for idx, e in enumerate(rgb_imgs) if association_times[idx] in odom_times]
-    print(f"After filter found {len(depth_imgs)} depth and {len(rgb_imgs)} rgb")
-    
-    odom_infos = [e[1:] for e in odom_infos]
-    odom_infos = [(e[:3], quat_to_mat(e[3:])) for e in odom_infos]
+    depth_imgs = [o3d.io.read_image(e) for e in depth_imgs]
+    rgb_imgs = [o3d.io.read_image(e) for e in rgb_imgs]
+    odom_infos = [np.load(e) for e in odom_infos]
+    odom_infos = [(e[1:4], quat_to_mat(e[4:])) for e in odom_infos]
     odom_infos = [normalize_start(*e, *odom_infos[0]) for e in odom_infos]
     odom_infos = [to_homogenious_matrix(*e) for e in odom_infos]
+    initial_odom_inv = np.linalg.inv(odom_infos[0])
+    odom_infos = [e @ initial_odom_inv for e in odom_infos]
 
     print(f"len(odom_infos) {len(odom_infos)} len(depth_imgs) {len(depth_imgs)} len(rgb_imgs) {len(rgb_imgs)}")
 
@@ -93,8 +91,8 @@ def rgbd_odom_to_pc(rgbd, odom, camera_intrinsics):
     pc = o3d.geometry.PointCloud.create_from_rgbd_image(
         rgbd, camera_intrinsics)
     pc_to_robot_frame = [[0, 0, 1], [-1, 0, 0], [0, -1, 0]]
-    pc.transform(odom)
     pc.rotate(pc_to_robot_frame, [0, 0, 0])
+    pc.transform(odom)
     return pc
 
 
